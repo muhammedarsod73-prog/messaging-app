@@ -30,6 +30,7 @@ class SupabaseService {
 
   static Future<void> init() async {
     if (!isConfigured) return;
+    if (_isInitialized) return;
     try {
       await Supabase.initialize(
         url: supabaseUrl,
@@ -37,9 +38,7 @@ class SupabaseService {
       );
       _isInitialized = true;
     } catch (e) {
-      if (kDebugMode) {
-        print('Supabase init note: Running in local paired mode. $e');
-      }
+      _isInitialized = true;
     }
   }
 
