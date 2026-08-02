@@ -1,0 +1,11 @@
+{
+    "name": "DuoChat - 2-Person WhatsApp Clone",
+    "short_name": "DuoChat",
+    "start_url": ".",
+    "display": "standalone",
+    "background_color": "#111B21",
+    "theme_color": "#075E54",
+    "description": "A private 2-person text messaging WhatsApp clone built with Flutter & Supabase.",
+    "orientation": "portrait-primary",
+    "prefer_related_applications": false
+}
