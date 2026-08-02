@@ -24,8 +24,12 @@ void main() async {
   final prefs = await SharedPreferences.getInstance();
   final storage = LocalStorageService(prefs);
 
-  // Initialize Supabase
-  await SupabaseService.init();
+  // Safely initialize Supabase
+  try {
+    await SupabaseService.init();
+  } catch (e) {
+    debugPrint('Supabase init note: $e');
+  }
 
   runApp(
     MultiProvider(
@@ -39,7 +43,11 @@ void main() async {
   );
 
   // Initialize Android/iOS 24/7 Foreground Background Notification Service
-  BackgroundServiceHandler.initializeService();
+  try {
+    BackgroundServiceHandler.initializeService();
+  } catch (e) {
+    debugPrint('Background service init note: $e');
+  }
 }
 
 class DuoChatApp extends StatefulWidget {

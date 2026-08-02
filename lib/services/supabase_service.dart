@@ -104,7 +104,8 @@ class SupabaseService {
   }
 
   // Mark all unread messages for receiver as read in Supabase
-  Future<void> markAllMessagesAsRead(String pairCode, String currentUserId) async {
+  Future<void> markAllMessagesAsRead(
+      String pairCode, String currentUserId) async {
     if (!_isInitialized || !isConfigured) return;
     try {
       await Supabase.instance.client
@@ -193,7 +194,9 @@ class SupabaseService {
           table: 'messages',
           callback: (payload) {
             final record = payload.newRecord;
-            if (record != null && (record['pair_code'] == pairCode || record['pair_code'] == null)) {
+            if (record != null &&
+                (record['pair_code'] == pairCode ||
+                    record['pair_code'] == null)) {
               final newMsg = MessageModel.fromJson(record);
               onNewMessage(newMsg);
             }
@@ -205,7 +208,9 @@ class SupabaseService {
           table: 'messages',
           callback: (payload) {
             final record = payload.newRecord;
-            if (record != null && (record['pair_code'] == pairCode || record['pair_code'] == null)) {
+            if (record != null &&
+                (record['pair_code'] == pairCode ||
+                    record['pair_code'] == null)) {
               final updatedMsg = MessageModel.fromJson(record);
               onUpdateMessage(updatedMsg);
             }
