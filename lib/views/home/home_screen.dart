@@ -24,6 +24,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   String _sidebarSearchQuery = '';
+  bool _isCallDialogShowing = false;
 
   @override
   void initState() {
@@ -37,75 +38,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       // Request OS System Notification Permission
       NotificationService.requestPermission();
 
-      // Subscribe to Realtime Call Signals for visual ringing dialog UI
+      // 1. Subscribe to Realtime WebSocket Call Signals
       SupabaseService().subscribeToCallSignals(
         pairCode: auth.pairCode,
         onCallSignal: (payload) {
           if (!mounted) return;
-          final type = payload['type'];
+          final type = payload['signal_type'] ?? payload['type'];
           final senderId = payload['sender_id'];
           final callerName = payload['caller_name'] ?? auth.partnerUser.name;
           final isVideo = payload['is_video'] ?? true;
 
           if (senderId != auth.currentUserId && type == 'incoming_call') {
-            showDialog(
-              context: context,
-              barrierDismissible: false,
-              builder: (ctx) => IncomingCallDialog(
-                callerName: callerName,
-                isVideoCall: isVideo,
-                onAccept: () {
-                  Navigator.pop(ctx);
-                  SupabaseService().sendCallSignal(
-                    pairCode: auth.pairCode,
-                    senderId: auth.currentUserId,
-                    receiverId: auth.partnerUser.id,
-                    callerName: auth.currentUser.name,
-                    type: 'call_accepted',
-                    isVideo: isVideo,
-                  );
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (callCtx) => VideoCallScreen(
-                        partnerName: callerName,
-                        channelId: auth.pairCode,
-                        isVideoCall: isVideo,
-                        isCaller: false,
-                        onEndCall: () {
-                          SupabaseService().sendCallSignal(
-                            pairCode: auth.pairCode,
-                            senderId: auth.currentUserId,
-                            receiverId: auth.partnerUser.id,
-                            callerName: auth.currentUser.name,
-                            type: 'call_ended',
-                            isVideo: isVideo,
-                          );
-                        },
-                      ),
-                    ),
-                  );
-                },
-                onDecline: () {
-                  Navigator.pop(ctx);
-                  SupabaseService().sendCallSignal(
-                    pairCode: auth.pairCode,
-                    senderId: auth.currentUserId,
-                    receiverId: auth.partnerUser.id,
-                    callerName: auth.currentUser.name,
-                    type: 'call_declined',
-                    isVideo: isVideo,
-                  );
-                },
-              ),
-            );
+            _handleIncomingCall(callerName, isVideo);
           }
         },
       );
 
+      // 2. Subscribe to Incoming Chat Stream (Handles Background Database Signals)
       chat.onNewIncomingMessage = (msg) {
         if (msg.receiverId == auth.currentUserId && mounted) {
-          // 1. Check if message is a Realtime Call Signal
+          // Check if message is a Realtime Call Signal
           if (msg.content.startsWith('[CALL_SIGNAL]:')) {
             try {
               final jsonString = msg.content.substring('[CALL_SIGNAL]:'.length);
@@ -117,7 +69,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 data = {
                   'type': parts.length > 1 ? parts[1] : '',
                   'is_video': parts.length > 2 ? (parts[2] == 'video') : true,
-                  'caller_name': parts.length > 3 ? parts[3] : auth.partnerUser.name,
+                  'caller_name':
+                      parts.length > 3 ? parts[3] : auth.partnerUser.name,
                 };
               }
 
@@ -126,57 +79,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               final callerName = data['caller_name'] ?? auth.partnerUser.name;
 
               if (type == 'incoming_call') {
-                showDialog(
-                  context: context,
-                  barrierDismissible: false,
-                  builder: (ctx) => IncomingCallDialog(
-                    callerName: callerName,
-                    isVideoCall: isVideo,
-                    onAccept: () {
-                      Navigator.pop(ctx);
-                      SupabaseService().sendCallSignal(
-                        pairCode: auth.pairCode,
-                        senderId: auth.currentUserId,
-                        receiverId: auth.partnerUser.id,
-                        callerName: auth.currentUser.name,
-                        type: 'call_accepted',
-                        isVideo: isVideo,
-                      );
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (callCtx) => VideoCallScreen(
-                            partnerName: callerName,
-                            channelId: auth.pairCode,
-                            isVideoCall: isVideo,
-                            isCaller: false,
-                            onEndCall: () {
-                              SupabaseService().sendCallSignal(
-                                pairCode: auth.pairCode,
-                                senderId: auth.currentUserId,
-                                receiverId: auth.partnerUser.id,
-                                callerName: auth.currentUser.name,
-                                type: 'call_ended',
-                                isVideo: isVideo,
-                              );
-                            },
-                          ),
-                        ),
-                      );
-                    },
-                    onDecline: () {
-                      Navigator.pop(ctx);
-                      SupabaseService().sendCallSignal(
-                        pairCode: auth.pairCode,
-                        senderId: auth.currentUserId,
-                        receiverId: auth.partnerUser.id,
-                        callerName: auth.currentUser.name,
-                        type: 'call_declined',
-                        isVideo: isVideo,
-                      );
-                    },
-                  ),
-                );
+                _handleIncomingCall(callerName, isVideo);
               }
             } catch (e) {
               debugPrint("Call signal JSON decode error: $e");
@@ -184,13 +87,83 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             return;
           }
 
-          // 2. System-Level OS Notification for regular text messages
+          // System-Level OS Notification for regular text messages
           NotificationService.showSystemNotification(
             title: auth.partnerUser.name,
             body: msg.content,
           );
         }
       };
+    });
+  }
+
+  /// Unified Helper to trigger IncomingCallDialog with stacking guard
+  void _handleIncomingCall(String callerName, bool isVideo) {
+    if (_isCallDialogShowing) return;
+    _isCallDialogShowing = true;
+
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => IncomingCallDialog(
+        callerName: callerName,
+        isVideoCall: isVideo,
+        onAccept: () {
+          _isCallDialogShowing = false;
+          Navigator.pop(ctx); // Close Dialog
+
+          // Send Acceptance Signal
+          SupabaseService().sendCallSignal(
+            pairCode: auth.pairCode,
+            senderId: auth.currentUserId,
+            receiverId: auth.partnerUser.id,
+            callerName: auth.currentUser.name,
+            type: 'call_accepted',
+            isVideo: isVideo,
+          );
+
+          // Route to Video Call Screen
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (callCtx) => VideoCallScreen(
+                partnerName: callerName,
+                channelId: auth.pairCode,
+                isVideoCall: isVideo,
+                isCaller: false,
+                onEndCall: () {
+                  SupabaseService().sendCallSignal(
+                    pairCode: auth.pairCode,
+                    senderId: auth.currentUserId,
+                    receiverId: auth.partnerUser.id,
+                    callerName: auth.currentUser.name,
+                    type: 'call_ended',
+                    isVideo: isVideo,
+                  );
+                },
+              ),
+            ),
+          );
+        },
+        onDecline: () {
+          _isCallDialogShowing = false;
+          Navigator.pop(ctx); // Close Dialog
+
+          // Send Decline Signal
+          SupabaseService().sendCallSignal(
+            pairCode: auth.pairCode,
+            senderId: auth.currentUserId,
+            receiverId: auth.partnerUser.id,
+            callerName: auth.currentUser.name,
+            type: 'call_declined',
+            isVideo: isVideo,
+          );
+        },
+      ),
+    ).then((_) {
+      _isCallDialogShowing = false;
     });
   }
 
@@ -249,7 +222,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 _buildSidebarHeader(context),
                 _buildSidebarSearch(context),
                 Expanded(
-                    child: _buildChatListContent(context, isDesktop: true)),
+                  child: _buildChatListContent(context, isDesktop: true),
+                ),
               ],
             ),
           ),
@@ -342,7 +316,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             radius: 18,
             backgroundColor: AppTheme.whatsappAccent,
             child: Text(
-              auth.currentUser.name[0].toUpperCase(),
+              auth.currentUser.name.isNotEmpty
+                  ? auth.currentUser.name[0].toUpperCase()
+                  : 'U',
               style: const TextStyle(
                   color: Colors.white, fontWeight: FontWeight.bold),
             ),

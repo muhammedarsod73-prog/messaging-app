@@ -7,8 +7,20 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/message_model.dart';
 import '../models/user_model.dart';
 
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../models/message_model.dart';
+import '../models/user_model.dart';
+
 class SupabaseService {
-  // Priority: 1. Local .env file (if initialized)  2. --dart-define flag  3. Project default
+  // Fundamentals: Singleton Pattern ensures only one instance and channel exist app-wide.
+  static final SupabaseService _instance = SupabaseService._internal();
+  factory SupabaseService() => _instance;
+  SupabaseService._internal();
+
   static String get supabaseUrl {
     try {
       if (dotenv.isInitialized) {
@@ -37,13 +49,21 @@ class SupabaseService {
   static bool get isConfigured =>
       supabaseUrl.isNotEmpty &&
       supabaseAnonKey.isNotEmpty &&
-      !supabaseUrl.contains('YOUR_SUPABASE_URL');
+      !supabaseUrl.contains('YOUR_SUPABASE_URL') ;
 
   RealtimeChannel? _messageChannel;
   RealtimeChannel? _profileChannel;
   RealtimeChannel? _callChannel;
 
-  // Send real-time WebRTC & Call Signal via in-memory WebSockets broadcast
+  // Initialize and persist the websocket channel for the pair session
+  Future<void> initCallChannel(String pairCode) async {
+    if (!_isInitialized || !isConfigured) return;
+    if (_callChannel == null) {
+      _callChannel = Supabase.instance.client.channel('call_room_$pairCode');
+      await _callChannel!.subscribe();
+    }
+  }
+
   Future<void> sendCallSignal({
     required String pairCode,
     required String senderId,
@@ -56,6 +76,7 @@ class SupabaseService {
     if (!_isInitialized || !isConfigured) return;
     try {
       final Map<String, dynamic> signalPayload = {
+        'signal_type': type,
         'type': type,
         'is_video': isVideo,
         'caller_name': callerName,
@@ -67,7 +88,6 @@ class SupabaseService {
         signalPayload.addAll(extraData);
       }
 
-      // If incoming_call, also insert lightweight record so background notification triggers
       if (type == 'incoming_call') {
         final msgId = 'call_${DateTime.now().millisecondsSinceEpoch}_$senderId';
         final content = '[CALL_SIGNAL]:${jsonEncode(signalPayload)}';
@@ -82,9 +102,7 @@ class SupabaseService {
         });
       }
 
-      // Broadcast over in-memory WebSocket channel (0 DB writes, 0 UI freeze)
-      _callChannel ??= Supabase.instance.client.channel('call_room_$pairCode');
-      await _callChannel!.subscribe();
+      await initCallChannel(pairCode);
       await _callChannel!.sendBroadcastMessage(
         event: 'call_signal',
         payload: signalPayload,
@@ -94,7 +112,6 @@ class SupabaseService {
     }
   }
 
-  // Subscribe to real-time WebSockets Call signals
   void subscribeToCallSignals({
     required String pairCode,
     required Function(Map<String, dynamic> payload) onCallSignal,
@@ -102,33 +119,17 @@ class SupabaseService {
     if (!_isInitialized || !isConfigured) return;
 
     _callChannel?.unsubscribe();
-
     _callChannel =
         Supabase.instance.client.channel('call_room_$pairCode').onBroadcast(
               event: 'call_signal',
-              callback: (payload) {
-                try {
-                  Map<String, dynamic> data = {};
-                  if (payload is Map) {
-                    if (payload.containsKey('payload') && payload['payload'] is Map) {
-                      data = Map<String, dynamic>.from(payload['payload'] as Map);
-                    } else {
-                      data = Map<String, dynamic>.from(payload);
-                    }
-                  }
-                  onCallSignal(data);
-                } catch (e) {
-                  if (kDebugMode) print('Broadcast signal payload parse error: $e');
-                }
-              },
+              callback: (payload) => onCallSignal(payload),
             );
 
     _callChannel?.subscribe();
   }
 
   static Future<void> init() async {
-    if (!isConfigured) return;
-    if (_isInitialized) return;
+    if (!isConfigured || _isInitialized) return;
     try {
       await Supabase.initialize(
         url: supabaseUrl,

@@ -1,3 +1,5 @@
+// lib/screens/call/video_call_screen.dart
+
 import 'package:duo_chat/providers/auth_provider.dart';
 import 'package:duo_chat/services/supabase_service.dart';
 import 'package:flutter/material.dart';
@@ -30,6 +32,10 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   final WebRtcService _rtcService = WebRtcService();
   bool _isConnected = false;
   bool _hasRemoteStream = false;
+  bool _offerSent = false;
+  bool _pcReady = false;
+  bool _acceptedReceived = false;
+  String? _pendingOfferSdp;
 
   @override
   void initState() {
@@ -41,81 +47,90 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     final auth = Provider.of<AuthProvider>(context, listen: false);
 
     await _rtcService.initRenderers();
-    final hasStream = await _rtcService.startLocalStream(isVideo: widget.isVideoCall);
+    final hasStream =
+        await _rtcService.startLocalStream(isVideo: widget.isVideoCall);
 
-    if (hasStream) {
-      // 1. Subscribe to WebRTC P2P Signaling Events
+    if (hasStream && mounted) {
+      // Fundamentals: Trigger setState so PIP local video view renders immediately
+      setState(() {});
+
+      // 1. Subscribe to WebRTC P2P Signaling Events via Singleton
       SupabaseService().subscribeToCallSignals(
         pairCode: auth.pairCode,
         onCallSignal: (payload) async {
           if (!mounted) return;
-          final type = payload['type'];
+          final type = payload['signal_type'] ?? payload['type'];
           final senderId = payload['sender_id'];
 
-          debugPrint("📞 [CallScreen Debug] Received signal type: '$type' from sender: '$senderId'");
-
           if (senderId != auth.currentUserId) {
-            // When Partner Accepts, Caller creates and sends SDP Offer NOW!
             if (type == 'call_accepted' && widget.isCaller) {
-              debugPrint("🚀 [CallScreen Debug] Partner accepted call! Creating & sending SDP Offer now...");
-              final offer = await _rtcService.createOffer();
-              if (offer != null) {
-                await SupabaseService().sendCallSignal(
-                  pairCode: auth.pairCode,
-                  senderId: auth.currentUserId,
-                  receiverId: auth.partnerUser.id,
-                  callerName: auth.currentUser.name,
-                  type: 'webrtc_offer',
-                  isVideo: widget.isVideoCall,
-                  extraData: {'sdp': offer.sdp},
-                );
-              }
-            } else if (type == 'webrtc_offer') {
-              final sdp = payload['sdp'];
-              if (sdp != null) {
-                debugPrint("📩 [CallScreen Debug] Handling incoming webrtc_offer...");
-                final offer = RTCSessionDescription(sdp, 'offer');
-                final answer = await _rtcService.createAnswer(offer);
-                if (answer != null) {
-                  debugPrint("📤 [CallScreen Debug] Sending webrtc_answer payload back to caller...");
+              _acceptedReceived = true;
+              if (!_offerSent && _pcReady) {
+                _offerSent = true;
+                final offer = await _rtcService.createOffer();
+                if (offer != null) {
                   await SupabaseService().sendCallSignal(
                     pairCode: auth.pairCode,
                     senderId: auth.currentUserId,
                     receiverId: auth.partnerUser.id,
                     callerName: auth.currentUser.name,
-                    type: 'webrtc_answer',
+                    type: 'webrtc_offer',
                     isVideo: widget.isVideoCall,
-                    extraData: {'sdp': answer.sdp},
+                    extraData: {'sdp': offer.sdp},
                   );
+                } else {
+                  _offerSent = false;
+                }
+              }
+            } else if (type == 'webrtc_offer') {
+              final sdp = payload['sdp'];
+              if (sdp != null) {
+                if (_pcReady) {
+                  await _handleIncomingOffer(sdp);
+                } else {
+                  _pendingOfferSdp = sdp;
                 }
               }
             } else if (type == 'webrtc_answer') {
               final sdp = payload['sdp'];
               if (sdp != null) {
-                debugPrint("📩 [CallScreen Debug] Handling incoming webrtc_answer...");
                 final answer = RTCSessionDescription(sdp, 'answer');
                 await _rtcService.setRemoteAnswer(answer);
               }
             } else if (type == 'webrtc_ice') {
               final candidateMap = payload['candidate'];
               if (candidateMap != null) {
-                debugPrint("📩 [CallScreen Debug] Handling incoming webrtc_ice candidate...");
-                final candidate = RTCIceCandidate(
-                  candidateMap['candidate'],
-                  candidateMap['sdpMid'],
-                  candidateMap['sdpMLineIndex'],
-                );
-                await _rtcService.addIceCandidate(candidate);
+                try {
+                  final candidateStr =
+                      candidateMap['candidate']?.toString() ?? '';
+                  final sdpMid = candidateMap['sdpMid']?.toString() ?? '';
+                  final sdpMLineIndex = (candidateMap['sdpMLineIndex'] is int)
+                      ? candidateMap['sdpMLineIndex'] as int
+                      : int.tryParse(
+                              candidateMap['sdpMLineIndex']?.toString() ??
+                                  '0') ??
+                          0;
+
+                  if (candidateStr.isNotEmpty) {
+                    final candidate = RTCIceCandidate(
+                      candidateStr,
+                      sdpMid,
+                      sdpMLineIndex,
+                    );
+                    await _rtcService.addIceCandidate(candidate);
+                  }
+                } catch (e) {
+                  debugPrint("ICE Candidate parse error: $e");
+                }
               }
             } else if (type == 'call_ended') {
-              debugPrint("🔴 [CallScreen Debug] Call ended by partner!");
               Navigator.pop(context);
             }
           }
         },
       );
 
-      // 2. Initialize PeerConnection and set candidate & stream handlers
+      // 2. Initialize PeerConnection
       await _rtcService.createPeerConnectionInstance(
         onIceCandidate: (candidate) {
           SupabaseService().sendCallSignal(
@@ -135,18 +150,38 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           );
         },
         onAddStream: (stream) {
-          debugPrint("🎬 [CallScreen Debug] Remote media stream received! Updating UI state...");
-          if (mounted) {
-            setState(() {
-              _hasRemoteStream = true;
-            });
-          }
+          if (mounted) setState(() => _hasRemoteStream = true);
+        },
+        onRemoteStream: (stream) {
+          if (mounted) setState(() => _hasRemoteStream = true);
         },
       );
 
-      // 3. If Receiver, send call_accepted signal to notify Caller that VideoCallScreen is active
+      _pcReady = true;
+      if (_pendingOfferSdp != null) {
+        await _handleIncomingOffer(_pendingOfferSdp!);
+        _pendingOfferSdp = null;
+      }
+
+      if (widget.isCaller && _acceptedReceived && !_offerSent) {
+        _offerSent = true;
+        final offer = await _rtcService.createOffer();
+        if (offer != null) {
+          await SupabaseService().sendCallSignal(
+            pairCode: auth.pairCode,
+            senderId: auth.currentUserId,
+            receiverId: auth.partnerUser.id,
+            callerName: auth.currentUser.name,
+            type: 'webrtc_offer',
+            isVideo: widget.isVideoCall,
+            extraData: {'sdp': offer.sdp},
+          );
+        } else {
+          _offerSent = false;
+        }
+      }
+
       if (!widget.isCaller) {
-        debugPrint("🟢 [CallScreen Debug] Receiver joined VideoCallScreen! Sending call_accepted signal...");
         await SupabaseService().sendCallSignal(
           pairCode: auth.pairCode,
           senderId: auth.currentUserId,
@@ -157,11 +192,24 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
         );
       }
 
-      if (mounted) {
-        setState(() {
-          _isConnected = true;
-        });
-      }
+      if (mounted) setState(() => _isConnected = true);
+    }
+  }
+
+  Future<void> _handleIncomingOffer(String sdp) async {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    final offer = RTCSessionDescription(sdp, 'offer');
+    final answer = await _rtcService.createAnswer(offer);
+    if (answer != null) {
+      await SupabaseService().sendCallSignal(
+        pairCode: auth.pairCode,
+        senderId: auth.currentUserId,
+        receiverId: auth.partnerUser.id,
+        callerName: auth.currentUser.name,
+        type: 'webrtc_answer',
+        isVideo: widget.isVideoCall,
+        extraData: {'sdp': answer.sdp},
+      );
     }
   }
 
@@ -173,13 +221,15 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isRemoteVisible =
+        _hasRemoteStream || (_rtcService.remoteRenderer.srcObject != null);
+
     return Scaffold(
       backgroundColor: const Color(0xFF0B141A),
       body: SafeArea(
         child: Stack(
           children: [
-            // 1. Remote Video Stream View (Fullscreen)
-            if (_hasRemoteStream && widget.isVideoCall)
+            if (isRemoteVisible && widget.isVideoCall)
               Positioned.fill(
                 child: RTCVideoView(
                   _rtcService.remoteRenderer,
@@ -188,7 +238,6 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                 ),
               )
             else
-              // Waiting for partner / Avatar View
               Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -227,7 +276,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                 ),
               ),
 
-            // 2. Local PIP Camera Overlay (top right thumbnail)
+            // PIP Camera Overlay
             if (widget.isVideoCall && !_rtcService.isVideoOff)
               Positioned(
                 top: 20,
@@ -240,24 +289,27 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                     decoration: BoxDecoration(
                       color: const Color(0xFF202C33),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppTheme.whatsappAccent, width: 2),
+                      border:
+                          Border.all(color: AppTheme.whatsappAccent, width: 2),
                     ),
                     child: RTCVideoView(
                       _rtcService.localRenderer,
                       mirror: true,
-                      objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                      objectFit:
+                          RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
                     ),
                   ),
                 ),
               ),
 
-            // 3. Bottom Control Bar (Mute, Camera Toggle, Flip, End Call)
+            // Controls
             Positioned(
               bottom: 30,
               left: 20,
               right: 20,
               child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
                 decoration: BoxDecoration(
                   color: const Color(0xFF111B21).withOpacity(0.9),
                   borderRadius: BorderRadius.circular(30),
@@ -268,11 +320,14 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
-                    // Mute Microphone
                     IconButton(
                       icon: Icon(
-                        _rtcService.isMuted ? Icons.mic_off_rounded : Icons.mic_rounded,
-                        color: _rtcService.isMuted ? Colors.redAccent : Colors.white,
+                        _rtcService.isMuted
+                            ? Icons.mic_off_rounded
+                            : Icons.mic_rounded,
+                        color: _rtcService.isMuted
+                            ? Colors.redAccent
+                            : Colors.white,
                         size: 28,
                       ),
                       onPressed: () {
@@ -281,15 +336,15 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                         });
                       },
                     ),
-
-                    // Toggle Camera
                     if (widget.isVideoCall)
                       IconButton(
                         icon: Icon(
                           _rtcService.isVideoOff
                               ? Icons.videocam_off_rounded
                               : Icons.videocam_rounded,
-                          color: _rtcService.isVideoOff ? Colors.redAccent : Colors.white,
+                          color: _rtcService.isVideoOff
+                              ? Colors.redAccent
+                              : Colors.white,
                           size: 28,
                         ),
                         onPressed: () {
@@ -298,8 +353,6 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                           });
                         },
                       ),
-
-                    // Flip Camera
                     if (widget.isVideoCall)
                       IconButton(
                         icon: const Icon(
@@ -311,8 +364,6 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                           _rtcService.switchCamera();
                         },
                       ),
-
-                    // End Call Button (Red)
                     InkWell(
                       onTap: () {
                         widget.onEndCall();
