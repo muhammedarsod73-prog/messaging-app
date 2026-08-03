@@ -19,8 +19,11 @@ class ChatProvider extends ChangeNotifier {
   }
 
   List<MessageModel> get messages {
-    if (_searchQuery.isEmpty) return _messages;
-    return _messages
+    final filtered = _messages
+        .where((m) => !m.content.startsWith('[CALL_SIGNAL]:'))
+        .toList();
+    if (_searchQuery.isEmpty) return filtered;
+    return filtered
         .where(
             (m) => m.content.toLowerCase().contains(_searchQuery.toLowerCase()))
         .toList();

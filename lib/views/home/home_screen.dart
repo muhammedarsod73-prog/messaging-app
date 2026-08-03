@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:duo_chat/providers/theme_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -6,9 +8,12 @@ import '../../models/message_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/chat_provider.dart';
 import '../../theme/app_theme.dart';
+import '../call/incoming_call_dialog.dart';
+import '../call/video_call_screen.dart';
 import '../chat/chat_screen.dart';
 import '../settings/settings_screen.dart';
 import '../../services/notification_service.dart';
+import '../../services/supabase_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -32,9 +37,154 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       // Request OS System Notification Permission
       NotificationService.requestPermission();
 
+      // Subscribe to Realtime Call Signals for visual ringing dialog UI
+      SupabaseService().subscribeToCallSignals(
+        pairCode: auth.pairCode,
+        onCallSignal: (payload) {
+          if (!mounted) return;
+          final type = payload['type'];
+          final senderId = payload['sender_id'];
+          final callerName = payload['caller_name'] ?? auth.partnerUser.name;
+          final isVideo = payload['is_video'] ?? true;
+
+          if (senderId != auth.currentUserId && type == 'incoming_call') {
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (ctx) => IncomingCallDialog(
+                callerName: callerName,
+                isVideoCall: isVideo,
+                onAccept: () {
+                  Navigator.pop(ctx);
+                  SupabaseService().sendCallSignal(
+                    pairCode: auth.pairCode,
+                    senderId: auth.currentUserId,
+                    receiverId: auth.partnerUser.id,
+                    callerName: auth.currentUser.name,
+                    type: 'call_accepted',
+                    isVideo: isVideo,
+                  );
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (callCtx) => VideoCallScreen(
+                        partnerName: callerName,
+                        channelId: auth.pairCode,
+                        isVideoCall: isVideo,
+                        isCaller: false,
+                        onEndCall: () {
+                          SupabaseService().sendCallSignal(
+                            pairCode: auth.pairCode,
+                            senderId: auth.currentUserId,
+                            receiverId: auth.partnerUser.id,
+                            callerName: auth.currentUser.name,
+                            type: 'call_ended',
+                            isVideo: isVideo,
+                          );
+                        },
+                      ),
+                    ),
+                  );
+                },
+                onDecline: () {
+                  Navigator.pop(ctx);
+                  SupabaseService().sendCallSignal(
+                    pairCode: auth.pairCode,
+                    senderId: auth.currentUserId,
+                    receiverId: auth.partnerUser.id,
+                    callerName: auth.currentUser.name,
+                    type: 'call_declined',
+                    isVideo: isVideo,
+                  );
+                },
+              ),
+            );
+          }
+        },
+      );
+
       chat.onNewIncomingMessage = (msg) {
         if (msg.receiverId == auth.currentUserId && mounted) {
-          // System-Level OS Notification (Sender Name + Message Text like WhatsApp)
+          // 1. Check if message is a Realtime Call Signal
+          if (msg.content.startsWith('[CALL_SIGNAL]:')) {
+            try {
+              final jsonString = msg.content.substring('[CALL_SIGNAL]:'.length);
+              Map<String, dynamic> data = {};
+              if (jsonString.startsWith('{')) {
+                data = jsonDecode(jsonString);
+              } else {
+                final parts = msg.content.split(':');
+                data = {
+                  'type': parts.length > 1 ? parts[1] : '',
+                  'is_video': parts.length > 2 ? (parts[2] == 'video') : true,
+                  'caller_name': parts.length > 3 ? parts[3] : auth.partnerUser.name,
+                };
+              }
+
+              final type = data['type'];
+              final isVideo = data['is_video'] ?? true;
+              final callerName = data['caller_name'] ?? auth.partnerUser.name;
+
+              if (type == 'incoming_call') {
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (ctx) => IncomingCallDialog(
+                    callerName: callerName,
+                    isVideoCall: isVideo,
+                    onAccept: () {
+                      Navigator.pop(ctx);
+                      SupabaseService().sendCallSignal(
+                        pairCode: auth.pairCode,
+                        senderId: auth.currentUserId,
+                        receiverId: auth.partnerUser.id,
+                        callerName: auth.currentUser.name,
+                        type: 'call_accepted',
+                        isVideo: isVideo,
+                      );
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (callCtx) => VideoCallScreen(
+                            partnerName: callerName,
+                            channelId: auth.pairCode,
+                            isVideoCall: isVideo,
+                            isCaller: false,
+                            onEndCall: () {
+                              SupabaseService().sendCallSignal(
+                                pairCode: auth.pairCode,
+                                senderId: auth.currentUserId,
+                                receiverId: auth.partnerUser.id,
+                                callerName: auth.currentUser.name,
+                                type: 'call_ended',
+                                isVideo: isVideo,
+                              );
+                            },
+                          ),
+                        ),
+                      );
+                    },
+                    onDecline: () {
+                      Navigator.pop(ctx);
+                      SupabaseService().sendCallSignal(
+                        pairCode: auth.pairCode,
+                        senderId: auth.currentUserId,
+                        receiverId: auth.partnerUser.id,
+                        callerName: auth.currentUser.name,
+                        type: 'call_declined',
+                        isVideo: isVideo,
+                      );
+                    },
+                  ),
+                );
+              }
+            } catch (e) {
+              debugPrint("Call signal JSON decode error: $e");
+            }
+            return;
+          }
+
+          // 2. System-Level OS Notification for regular text messages
           NotificationService.showSystemNotification(
             title: auth.partnerUser.name,
             body: msg.content,

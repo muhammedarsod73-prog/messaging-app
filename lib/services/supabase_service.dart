@@ -1,22 +1,36 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:realtime_client/realtime_client.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/message_model.dart';
 import '../models/user_model.dart';
 
 class SupabaseService {
-  // Priority: 1. Local .env file  2. --dart-define environment flag
+  // Priority: 1. Local .env file (if initialized)  2. --dart-define flag  3. Project default
   static String get supabaseUrl {
-    final envVal = dotenv.env['SUPABASE_URL'];
-    if (envVal != null && envVal.isNotEmpty) return envVal;
-    return const String.fromEnvironment('SUPABASE_URL');
+    try {
+      if (dotenv.isInitialized) {
+        final envVal = dotenv.env['SUPABASE_URL'];
+        if (envVal != null && envVal.isNotEmpty) return envVal;
+      }
+    } catch (_) {}
+    const envFlag = String.fromEnvironment('SUPABASE_URL');
+    if (envFlag.isNotEmpty) return envFlag;
+    return '';
   }
 
   static String get supabaseAnonKey {
-    final envVal = dotenv.env['SUPABASE_ANON_KEY'];
-    if (envVal != null && envVal.isNotEmpty) return envVal;
-    return const String.fromEnvironment('SUPABASE_ANON_KEY');
+    try {
+      if (dotenv.isInitialized) {
+        final envVal = dotenv.env['SUPABASE_ANON_KEY'];
+        if (envVal != null && envVal.isNotEmpty) return envVal;
+      }
+    } catch (_) {}
+    const envFlag = String.fromEnvironment('SUPABASE_ANON_KEY');
+    if (envFlag.isNotEmpty) return envFlag;
+    return '';
   }
 
   static bool _isInitialized = false;
@@ -27,6 +41,90 @@ class SupabaseService {
 
   RealtimeChannel? _messageChannel;
   RealtimeChannel? _profileChannel;
+  RealtimeChannel? _callChannel;
+
+  // Send real-time WebRTC & Call Signal via in-memory WebSockets broadcast
+  Future<void> sendCallSignal({
+    required String pairCode,
+    required String senderId,
+    required String receiverId,
+    required String callerName,
+    required String type,
+    required bool isVideo,
+    Map<String, dynamic>? extraData,
+  }) async {
+    if (!_isInitialized || !isConfigured) return;
+    try {
+      final Map<String, dynamic> signalPayload = {
+        'type': type,
+        'is_video': isVideo,
+        'caller_name': callerName,
+        'sender_id': senderId,
+        'receiver_id': receiverId,
+        'pair_code': pairCode,
+      };
+      if (extraData != null) {
+        signalPayload.addAll(extraData);
+      }
+
+      // If incoming_call, also insert lightweight record so background notification triggers
+      if (type == 'incoming_call') {
+        final msgId = 'call_${DateTime.now().millisecondsSinceEpoch}_$senderId';
+        final content = '[CALL_SIGNAL]:${jsonEncode(signalPayload)}';
+        await Supabase.instance.client.from('messages').insert({
+          'id': msgId,
+          'pair_code': pairCode,
+          'sender_id': senderId,
+          'receiver_id': receiverId,
+          'content': content,
+          'status': 'sent',
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      }
+
+      // Broadcast over in-memory WebSocket channel (0 DB writes, 0 UI freeze)
+      _callChannel ??= Supabase.instance.client.channel('call_room_$pairCode');
+      await _callChannel!.subscribe();
+      await _callChannel!.sendBroadcastMessage(
+        event: 'call_signal',
+        payload: signalPayload,
+      );
+    } catch (e) {
+      if (kDebugMode) print('Send call signal error: $e');
+    }
+  }
+
+  // Subscribe to real-time WebSockets Call signals
+  void subscribeToCallSignals({
+    required String pairCode,
+    required Function(Map<String, dynamic> payload) onCallSignal,
+  }) {
+    if (!_isInitialized || !isConfigured) return;
+
+    _callChannel?.unsubscribe();
+
+    _callChannel =
+        Supabase.instance.client.channel('call_room_$pairCode').onBroadcast(
+              event: 'call_signal',
+              callback: (payload) {
+                try {
+                  Map<String, dynamic> data = {};
+                  if (payload is Map) {
+                    if (payload.containsKey('payload') && payload['payload'] is Map) {
+                      data = Map<String, dynamic>.from(payload['payload'] as Map);
+                    } else {
+                      data = Map<String, dynamic>.from(payload);
+                    }
+                  }
+                  onCallSignal(data);
+                } catch (e) {
+                  if (kDebugMode) print('Broadcast signal payload parse error: $e');
+                }
+              },
+            );
+
+    _callChannel?.subscribe();
+  }
 
   static Future<void> init() async {
     if (!isConfigured) return;

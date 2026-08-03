@@ -3,7 +3,10 @@ import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/chat_provider.dart';
 import '../../providers/theme_provider.dart';
+import '../../services/supabase_service.dart';
 import '../../theme/app_theme.dart';
+import '../call/incoming_call_dialog.dart';
+import '../call/video_call_screen.dart';
 import '../settings/settings_screen.dart';
 import 'widgets/chat_input_bar.dart';
 import 'widgets/message_bubble.dart';
@@ -29,6 +32,73 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final auth = Provider.of<AuthProvider>(context, listen: false);
       final chat = Provider.of<ChatProvider>(context, listen: false);
       chat.markAllAsRead(auth.currentUserId);
+
+      // Subscribe to Realtime Call Signals
+      SupabaseService().subscribeToCallSignals(
+        pairCode: auth.pairCode,
+        onCallSignal: (payload) {
+          if (!mounted) return;
+          final type = payload['type'];
+          final senderId = payload['sender_id'];
+          final callerName = payload['caller_name'] ?? 'Partner';
+          final isVideo = payload['is_video'] ?? true;
+
+          // Incoming Call Received from Partner
+          if (senderId != auth.currentUserId && type == 'incoming_call') {
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (ctx) => IncomingCallDialog(
+                callerName: callerName,
+                isVideoCall: isVideo,
+                onAccept: () {
+                  Navigator.pop(ctx);
+                  SupabaseService().sendCallSignal(
+                    pairCode: auth.pairCode,
+                    senderId: auth.currentUserId,
+                    receiverId: auth.partnerUser.id,
+                    callerName: auth.currentUser.name,
+                    type: 'call_accepted',
+                    isVideo: isVideo,
+                  );
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (callCtx) => VideoCallScreen(
+                        partnerName: callerName,
+                        channelId: auth.pairCode,
+                        isVideoCall: isVideo,
+                        isCaller: false,
+                        onEndCall: () {
+                          SupabaseService().sendCallSignal(
+                            pairCode: auth.pairCode,
+                            senderId: auth.currentUserId,
+                            receiverId: auth.partnerUser.id,
+                            callerName: auth.currentUser.name,
+                            type: 'call_ended',
+                            isVideo: isVideo,
+                          );
+                        },
+                      ),
+                    ),
+                  );
+                },
+                onDecline: () {
+                  Navigator.pop(ctx);
+                  SupabaseService().sendCallSignal(
+                    pairCode: auth.pairCode,
+                    senderId: auth.currentUserId,
+                    receiverId: auth.partnerUser.id,
+                    callerName: auth.currentUser.name,
+                    type: 'call_declined',
+                    isVideo: isVideo,
+                  );
+                },
+              ),
+            );
+          }
+        },
+      );
     });
   }
 
@@ -160,11 +230,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ],
         ),
         actions: [
-          // Search Icon
+          // Video Call Button
           IconButton(
-            icon: Icon(
-              chat.isSearching ? Icons.search_off_rounded : Icons.search_rounded,
-            ),
+            icon: const Icon(Icons.videocam_rounded),
+            tooltip: 'Video Call',
+            onPressed: () => _startCall(context, isVideoCall: true),
+          ),
+
+          // Voice Call Button
+          IconButton(
+            icon: const Icon(Icons.call_rounded),
+            tooltip: 'Voice Call',
+            onPressed: () => _startCall(context, isVideoCall: false),
+          ),
+
+          // Search Button
+          IconButton(
+            icon: Icon(chat.isSearching ? Icons.close_rounded : Icons.search_rounded),
             onPressed: () => chat.toggleSearch(),
           ),
 
@@ -318,6 +400,43 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               },
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  void _startCall(BuildContext context, {required bool isVideoCall}) {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+
+    // 1. Send Realtime Call Signal over Postgres WebSockets to Partner
+    SupabaseService().sendCallSignal(
+      pairCode: auth.pairCode,
+      senderId: auth.currentUserId,
+      receiverId: auth.partnerUser.id,
+      callerName: auth.currentUser.name,
+      type: 'incoming_call',
+      isVideo: isVideoCall,
+    );
+
+    // 2. Push Video Call View for Caller
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (ctx) => VideoCallScreen(
+          partnerName: auth.partnerUser.name,
+          channelId: auth.pairCode,
+          isVideoCall: isVideoCall,
+          isCaller: true,
+          onEndCall: () {
+            SupabaseService().sendCallSignal(
+              pairCode: auth.pairCode,
+              senderId: auth.currentUserId,
+              receiverId: auth.partnerUser.id,
+              callerName: auth.currentUser.name,
+              type: 'call_ended',
+              isVideo: isVideoCall,
+            );
+          },
         ),
       ),
     );

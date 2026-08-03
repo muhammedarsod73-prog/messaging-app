@@ -124,6 +124,23 @@ class MessageBubble extends StatelessWidget {
     }
   }
 
+  double _calculateFontSize(String text) {
+    if (text.trim().isEmpty) return 15.0;
+    final clean = text.trim().replaceAll(RegExp(r'\s+'), '');
+    final chars = clean.characters;
+
+    final emojiRegex = RegExp(
+      r'^(\u00a9|\u00ae|[\u2000-\u3300]|\ud83c[\ud000-\udfff]|\ud83d[\ud000-\udfff]|\ud83e[\ud000-\udfff])+$',
+    );
+
+    if (emojiRegex.hasMatch(clean)) {
+      if (chars.length == 1) return 46.0; // Giant single emoji
+      if (chars.length == 2) return 36.0; // Large double emoji
+      if (chars.length == 3) return 28.0; // Medium triple emoji
+    }
+    return 15.0;
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -132,6 +149,8 @@ class MessageBubble extends StatelessWidget {
     final bubbleBg = isMe
         ? (isDark ? AppTheme.darkSentBubble : AppTheme.lightSentBubble)
         : (isDark ? AppTheme.darkReceivedBubble : AppTheme.lightReceivedBubble);
+
+    final fontSize = _calculateFontSize(message.content);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
@@ -203,7 +222,7 @@ class MessageBubble extends StatelessWidget {
                         Text(
                           message.content,
                           style: TextStyle(
-                            fontSize: 15,
+                            fontSize: fontSize,
                             fontStyle: message.isDeleted ? FontStyle.italic : FontStyle.normal,
                             color: message.isDeleted
                                 ? (isDark ? AppTheme.darkTextSecondary : AppTheme.lightTextSecondary)

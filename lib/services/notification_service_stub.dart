@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
@@ -51,22 +52,25 @@ Future<void> showSystemNotificationImpl({
   }
 
   try {
-    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-      'duochat_messages_channel',
-      'DuoChat Messages',
-      channelDescription: 'Real-time 2-person text chat notifications',
+    final Int64List vibrationPattern = Int64List.fromList([0, 500, 200, 500]);
+
+    final AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      'duochat_high_importance_channel',
+      'DuoChat Incoming Messages',
+      channelDescription: 'Real-time text message alerts with sound & vibration',
       importance: Importance.max,
       priority: Priority.high,
       showWhen: true,
       ticker: 'DuoChat message received',
       enableVibration: true,
+      vibrationPattern: vibrationPattern,
       playSound: true,
     );
 
-    const NotificationDetails notificationDetails = NotificationDetails(
+    final NotificationDetails notificationDetails = NotificationDetails(
       android: androidDetails,
-      iOS: DarwinNotificationDetails(presentAlert: true, presentSound: true),
-      macOS: DarwinNotificationDetails(presentAlert: true, presentSound: true),
+      iOS: const DarwinNotificationDetails(presentAlert: true, presentSound: true),
+      macOS: const DarwinNotificationDetails(presentAlert: true, presentSound: true),
     );
 
     final id = DateTime.now().millisecondsSinceEpoch ~/ 1000;

@@ -2,6 +2,8 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/message_model.dart';
 import 'local_storage_service.dart';
@@ -13,6 +15,35 @@ class BackgroundServiceHandler {
     if (kIsWeb) return;
 
     try {
+      // 1. Silent channel for background service indicator badge
+      const AndroidNotificationChannel serviceChannel = AndroidNotificationChannel(
+        'duochat_foreground_service_channel',
+        'DuoChat Background Service',
+        description: 'DuoChat background connection indicator',
+        importance: Importance.low,
+      );
+
+      // 2. High-Importance channel with vibration and sound for incoming text messages
+      const AndroidNotificationChannel messageChannel = AndroidNotificationChannel(
+        'duochat_high_importance_channel',
+        'DuoChat Incoming Messages',
+        description: 'Real-time text message alerts with sound & vibration',
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: true,
+      );
+
+      final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+          FlutterLocalNotificationsPlugin();
+
+      final androidPlugin = flutterLocalNotificationsPlugin
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+
+      await androidPlugin?.createNotificationChannel(serviceChannel);
+      await androidPlugin?.createNotificationChannel(messageChannel);
+
+      // 3. Configure Foreground Service with serviceChannel
       final service = FlutterBackgroundService();
 
       await service.configure(
@@ -21,7 +52,7 @@ class BackgroundServiceHandler {
           autoStart: true,
           autoStartOnBoot: true,
           isForegroundMode: true,
-          notificationChannelId: 'duochat_messages_channel',
+          notificationChannelId: 'duochat_foreground_service_channel',
           initialNotificationTitle: 'DuoChat Active',
           initialNotificationContent: 'Monitoring private messages...',
           foregroundServiceNotificationId: 888,
@@ -52,6 +83,10 @@ void onStartBackgroundService(ServiceInstance service) async {
   WidgetsFlutterBinding.ensureInitialized();
 
   try {
+    await dotenv.load(fileName: ".env");
+  } catch (_) {}
+
+  try {
     final prefs = await SharedPreferences.getInstance();
     final storage = LocalStorageService(prefs);
 
@@ -65,6 +100,11 @@ void onStartBackgroundService(ServiceInstance service) async {
       supabase.subscribeToMessages(
         pairCode: pairCode,
         onNewMessage: (MessageModel msg) async {
+          // Skip WebRTC call signaling payloads from text cache and text notifications
+          if (msg.content.startsWith('[CALL_SIGNAL]:')) {
+            return;
+          }
+
           // 1. Save to local cache so main UI thread sees it immediately on resume
           final currentMsgs = storage.getCachedMessages();
           if (!currentMsgs.any((m) => m.id == msg.id)) {
