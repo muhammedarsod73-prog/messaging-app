@@ -10,6 +10,10 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.22.0'
+          channel: 'stable'
+      - name: Create Flutter Project Files
+        run: |
+          flutter create . --project-name messaging_app --org com.kingchat --platforms android
       - run: flutter pub get
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
