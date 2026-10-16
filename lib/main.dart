@@ -1,98 +1,61 @@
-import 'dart:ui';
-
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'providers/auth_provider.dart';
-import 'providers/chat_provider.dart';
-import 'providers/theme_provider.dart';
-import 'services/background_service.dart';
-import 'services/local_storage_service.dart';
-import 'services/supabase_service.dart';
-import 'theme/app_theme.dart';
-import 'views/home/home_screen.dart';
-import 'views/settings/passcode_screen.dart';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  // Catch any unhandled framework errors to prevent startup crash
-  FlutterError.onError = (FlutterErrorDetails details) {
-    FlutterError.presentError(details);
-  };
-
-  PlatformDispatcher.instance.onError = (error, stack) {
-    debugPrint('Uncaught app error: $error');
-    return true;
-  };
-
-  // Load .env configuration file if present
-  try {
-    await dotenv.load(fileName: ".env");
-  } catch (_) {}
-
-  // Initialize Local Storage
-  final prefs = await SharedPreferences.getInstance();
-  final storage = LocalStorageService(prefs);
-
-  // Safely initialize Supabase
-  try {
-    await SupabaseService.init();
-  } catch (e) {
-    debugPrint('Supabase init note: $e');
-  }
-
-  runApp(
-    MultiProvider(
-      providers: [
-        ChangeNotifierProvider(create: (_) => ThemeProvider(storage)),
-        ChangeNotifierProvider(create: (_) => AuthProvider(storage)),
-        ChangeNotifierProvider(create: (_) => ChatProvider(storage)),
-      ],
-      child: const DuoChatApp(),
-    ),
-  );
-
-  // Initialize Android/iOS 24/7 Foreground Background Notification Service
-  try {
-    BackgroundServiceHandler.initializeService();
-  } catch (e) {
-    debugPrint('Background service init note: $e');
-  }
+void main() {
+  runApp(const KingChatApp());
 }
 
-class DuoChatApp extends StatefulWidget {
-  const DuoChatApp({Key? key}) : super(key: key);
-
-  @override
-  State<DuoChatApp> createState() => _DuoChatAppState();
-}
-
-class _DuoChatAppState extends State<DuoChatApp> {
-  bool _isUnlocked = false;
+class KingChatApp extends StatelessWidget {
+  const KingChatApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final theme = Provider.of<ThemeProvider>(context);
-
-    final showLock = theme.isPasscodeEnabled && !_isUnlocked;
-
     return MaterialApp(
-      title: 'DuoChat - 2-Person WhatsApp Clone',
+      title: 'King Chat',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.lightTheme,
-      darkTheme: AppTheme.darkTheme,
-      themeMode: theme.isDarkMode ? ThemeMode.dark : ThemeMode.light,
-      home: showLock
-          ? PasscodeScreen(
-              onUnlocked: () {
-                setState(() {
-                  _isUnlocked = true;
-                });
-              },
-            )
-          : const HomeScreen(),
+      home: const KingChatHome(),
+    );
+  }
+}
+
+class KingChatHome extends StatelessWidget {
+  const KingChatHome({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF4B0082),
+        title: const Text('King Chat',
+            style: TextStyle(color: Color(0xFFFFD700))),
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 120,
+              height: 120,
+              decoration: BoxDecoration(
+                color: const Color(0xFF4B0082),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: const Center(
+                child: Text('K',
+                    style: TextStyle(
+                        color: Color(0xFFFFD700),
+                        fontSize: 80,
+                        fontWeight: FontWeight.bold)),
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text('King Chat',
+                style: TextStyle(
+                    fontSize: 32,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF4B0082))),
+          ],
+        ),
+      ),
     );
   }
 }
